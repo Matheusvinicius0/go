@@ -1,112 +1,114 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
-	"os"
+	"net/url"
 	"strings"
-	"sync"
-	"time"
 )
 
-type CacheItem struct {
-	Data       []byte
-	Headers    http.Header
-	Expiration time.Time
-}
-
-var cache sync.Map
-var cacheDuration = 24 * time.Hour
-var meusAddons = make(map[string]string)
-
-func carregarAddons() {
-	addonsEnv := os.Getenv("ADDONS_LIST")
-	// Isso aparece nos Logs do Render, facilitando o seu debug
-	fmt.Printf("DEBUG: Valor lido da variável ADDONS_LIST: '%s'\n", addonsEnv)
-	
-	if addonsEnv == "" {
-		fmt.Println("ERRO CRÍTICO: Variável 'ADDONS_LIST' não encontrada no ambiente!")
+// ProxyHandler recebe o pedido da TV
+func ProxyHandler(w http.ResponseWriter, r *http.Request) {
+	// Pega a URL original que a TV quer assistir via parâmetro
+	// Ex: http://SEU_IP:11470/proxy?url=https://site.com/video.m3u8
+	targetURLStr := r.URL.Query().Get("url")
+	if targetURLStr == "" {
+		http.Error(w, "Faltou o parâmetro 'url'", http.StatusBadRequest)
 		return
 	}
 
-	// Suporta múltiplos addons separados por vírgula
-	pares := strings.Split(addonsEnv, ",")
-	for _, par := range pares {
-		kv := strings.SplitN(par, "=", 2)
-		if len(kv) == 2 {
-			rota := strings.Trim(strings.TrimSpace(kv[0]), "/")
-			link := strings.TrimRight(strings.TrimSpace(kv[1]), "/")
-			meusAddons[rota] = link
-			fmt.Printf("CONFIGURADO: Rota '/%s' aponta para '%s'\n", rota, link)
-		}
-	}
-}
-
-func proxyHandler(w http.ResponseWriter, r *http.Request) {
-	// Pega o caminho, remove a barra inicial e pega a primeira parte (ex: fenixflix)
-	partes := strings.Split(strings.TrimPrefix(r.URL.Path, "/"), "/")
-	prefixo := partes[0]
-	
-	targetBaseURL, ok := meusAddons[prefixo]
-	if !ok {
-		http.Error(w, "Addon não mapeado nesta rota", http.StatusNotFound)
-		return
-	}
-
-	// Monta o resto da URL (o que vem depois do prefixo)
-	pathRestante := strings.TrimPrefix(r.URL.Path, "/"+prefixo)
-	targetURL := targetBaseURL + pathRestante
-	if r.URL.RawQuery != "" {
-		targetURL += "?" + r.URL.RawQuery
-	}
-
-	// Verificação de Cache
-	if item, found := cache.Load(targetURL); found {
-		cItem := item.(CacheItem)
-		if time.Now().Before(cItem.Expiration) {
-			for k, v := range cItem.Headers {
-				w.Header()[k] = v
-			}
-			w.Header().Set("X-Cache", "HIT")
-			w.Write(cItem.Data)
-			return
-		}
-	}
-
-	// Requisição ao servidor real
-	resp, err := http.Get(targetURL)
+	targetURL, err := url.Parse(targetURLStr)
 	if err != nil {
-		http.Error(w, "Erro ao conectar ao servidor original", http.StatusBadGateway)
+		http.Error(w, "URL inválida", http.StatusBadRequest)
+		return
+	}
+
+	// 1. Cria a requisição para o servidor original
+	req, err := http.NewRequest("GET", targetURLStr, nil)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// INJEÇÃO DE HEADERS (O Segredo para burlar o bloqueio)
+	req.Header.Set("Referer", "https://7embeddecanais.xyz/")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+	// 2. Faz o download do arquivo
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		http.Error(w, "Erro ao conectar no servidor original", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		http.Error(w, "Erro ao ler resposta", http.StatusInternalServerError)
+	// 3. Verifica se é um arquivo de texto M3U8
+	contentType := resp.Header.Get("Content-Type")
+	if strings.Contains(contentType, "mpegurl") || strings.HasSuffix(targetURL.Path, ".m3u8") {
+		// Se for M3U8, manda para a nossa função de reescrever
+		rewriteM3U8(w, resp.Body, targetURL, r.Host)
 		return
 	}
 
-	// Salva no Cache
-	cache.Store(targetURL, CacheItem{Data: body, Headers: resp.Header.Clone(), Expiration: time.Now().Add(cacheDuration)})
-
-	for k, v := range resp.Header {
-		w.Header()[k] = v
+	// 4. Se não for M3U8 (ex: for o arquivo .ts de vídeo puro)
+	// Apenas repassa o vídeo direto para a TV (Streaming por Buffer)
+	for k, vv := range resp.Header {
+		for _, v := range vv {
+			w.Header().Add(k, v)
+		}
 	}
-	w.Header().Set("X-Cache", "MISS")
-	w.Write(body)
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body) // Transfere os bytes em tempo real
+}
+
+// rewriteM3U8 lê o arquivo linha por linha e modifica as URLs
+func rewriteM3U8(w http.ResponseWriter, body io.Reader, baseURL *url.URL, proxyHost string) {
+	scanner := bufio.NewScanner(body)
+	var rewrittenBody bytes.Buffer
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+
+		// Se a linha for vazia ou for uma Tag do M3U8 (começa com #), mantemos igual
+		if line == "" || strings.HasPrefix(line, "#") {
+			rewrittenBody.WriteString(line + "\n")
+			continue
+		}
+
+		// Se chegou aqui, é o link de um arquivo .ts ou de outro .m3u8 interno
+		segmentURL, err := url.Parse(line)
+		if err != nil {
+			rewrittenBody.WriteString(line + "\n")
+			continue
+		}
+
+		// Resolve links relativos. 
+		// (Se o servidor mandou só "video_01.ts", o Go junta com a URL do M3U8 pai)
+		absoluteURL := baseURL.ResolveReference(segmentURL).String()
+
+		// Cria a nova URL mandando o arquivo passar pelo nosso proxy
+		// url.QueryEscape garante que links complexos não quebrem o formato
+		proxiedURL := fmt.Sprintf("http://%s/proxy?url=%s", proxyHost, url.QueryEscape(absoluteURL))
+
+		// Escreve a nova linha reescrita
+		rewrittenBody.WriteString(proxiedURL + "\n")
+	}
+
+	// Devolve o M3U8 modificado para a TV
+	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+	w.Header().Set("Access-Control-Allow-Origin", "*") // Evita bloqueio de CORS em alguns players
+	w.WriteHeader(http.StatusOK)
+	w.Write(rewrittenBody.Bytes())
 }
 
 func main() {
-	carregarAddons()
-
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
-
-	http.HandleFunc("/", proxyHandler)
-	fmt.Printf("Servidor proxy iniciado na porta %s...\n", port)
-	http.ListenAndServe(":"+port, nil)
+	http.HandleFunc("/proxy", ProxyHandler)
+	log.Println("Proxy Fenixflix rodando na porta 11470...")
+	// Escutando em 0.0.0.0 para aceitar conexões da TV na rede Wi-Fi
+	log.Fatal(http.ListenAndServe("0.0.0.0:11470", nil))
 }
