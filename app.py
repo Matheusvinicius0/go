@@ -2,12 +2,12 @@ import uvloop
 import asyncio
 asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response, RedirectResponse
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import uvicorn
-from urllib.parse import urljoin, quote
+from urllib.parse import quote
 from contextlib import asynccontextmanager
 
 _http_client: httpx.AsyncClient = None
