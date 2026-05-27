@@ -3,15 +3,12 @@ import asyncio
 asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse, RedirectResponse
+from fastapi.responses import JSONResponse, Response, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.background import BackgroundTask
 import httpx
 import uvicorn
 from urllib.parse import urljoin, quote
 from contextlib import asynccontextmanager
-
-VERSION = "2.0.2"
 
 _http_client: httpx.AsyncClient = None
 
@@ -28,8 +25,8 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 @app.get("/manifest.json")
 async def manifest():
     return {
-        "id": "com.fenixflix.live",
-        "version": VERSION,
+        "id": "com.globo.tv",
+        "version": "1.0.0",
         "name": "GLOBO TV",
         "description": "Canal Ao Vivo",
         "types": ["tv"],
@@ -57,7 +54,6 @@ async def stream(id: str, request: Request):
 
 @app.get("/live")
 async def live(request: Request):
-    # Link fixo que você passou
     url_m3u8 = "http://67.220.74.155/live/Marcelo123/Marcelo321/116569.m3u8"
     host = request.headers.get("host")
     return RedirectResponse(url=f"http://{host}/proxy?url={quote(url_m3u8)}")
@@ -76,7 +72,7 @@ async def proxy(url: str, request: Request):
                 else:
                     new_text += line + "\n"
             return Response(new_text, media_type="application/vnd.apple.mpegurl")
-        return StreamingResponse(r.iter_bytes(), media_type=r.headers.get("Content-Type"))
+        return Response(r.content, media_type=r.headers.get("Content-Type"))
     except:
         return Response("Erro no proxy", status_code=502)
 
