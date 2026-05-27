@@ -3,17 +3,16 @@ import asyncio
 asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, HTMLResponse, Response, StreamingResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
+from fastapi.responses import JSONResponse, Response, StreamingResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.background import BackgroundTask
 import httpx
-import os
 import uvicorn
 from urllib.parse import urljoin, quote
 from contextlib import asynccontextmanager
 
-VERSION = "2.0.0" # Versão nova, focada só em TV
+VERSION = "2.0.0"
+
 _http_client: httpx.AsyncClient = None
 
 @asynccontextmanager
@@ -31,11 +30,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# Opcional: Se você ainda tiver a pasta "templates", ele vai renderizar o site. 
-# Se não tiver, você pode deletar esta linha e a rota "/" abaixo.
-templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -44,13 +38,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/", response_class=HTMLResponse)
-async def root(request: Request):
-    manifest_data = {"name": "FENIXFLIX TV", "description": "Canais Ao Vivo", "types": ["tv"]}
-    try:
-        return templates.TemplateResponse(request=request, name="index.html", context={"manifest": manifest_data, "version": VERSION})
-    except:
-        return HTMLResponse("<h1>FenixFlix Proxy Rodando!</h1><p>Adicione o manifest.json no Stremio.</p>")
+@app.get("/")
+async def root():
+    return Response(content="<h1>FenixFlix Proxy Rodando!</h1><p>Adicione o manifest.json no Stremio.</p>", media_type="text/html")
 
 @app.get("/manifest.json")
 async def manifest_endpoint():
