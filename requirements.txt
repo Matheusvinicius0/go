@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+uvloop
+slowapi
+httpx
+orjson
+aiofiles
+python-dotenv
+jinja2
